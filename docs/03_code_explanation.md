@@ -1,71 +1,415 @@
-# Pipeline do Nó de Processamento LiDAR (`lidar-perception-node`)
+# Pipeline de Percepção LiDAR
 
-O pacote de percepção LiDAR realiza a filtragem, segmentação, restauração geométrica e classificação dos cones de pista. A fusão sensorial é feita combinando as métricas 3D do LiDAR com a classificação de cor da câmera ZED 2i.
+Este documento descreve o funcionamento do pipeline responsável por transformar a nuvem de pontos do LiDAR em detecções de cones utilizadas pelo sistema Driverless.
 
----
-
-## 1. Máquina de Estados e Sincronização Sensorial
-
-Como a taxa de atualização da câmera ZED 2i e do LiDAR **LeiShen CH128X1** são distintas, o sistema executa um loop de decisão assíncrono baseado em temporizador.
-
-Dada a hora atual $t_{\text{curr}}$ e os carimbos de data/hora das últimas mensagens recebidas ($t_{\text{lidar}}$ e $t_{\text{camera}}$), definimos um limiar de frescor máximo $\Delta t_{\text{max}}$:
-
-$$Valid_{\text{lidar}} = \begin{cases}  \text{True}, & \text{se } (t_{\text{curr}} - t_{\text{lidar}}) < \Delta t_{\text{max}} \\  \text{False}, & \text{caso contrário}  \end{cases}$$
-
-$$Valid_{\text{camera}} = \begin{cases}  \text{True}, & \text{se } (t_{\text{curr}} - t_{\text{camera}}) < \Delta t_{\text{max}} \\  \text{False}, & \text{caso contrário}  \end{cases}$$
-
-O sistema transiciona dinamicamente entre quatro estados $S$:
-
-$$S = \begin{cases} \text{BOTH}, & \text{se } Valid_{\text{lidar}} \land Valid_{\text{camera}} \\ \text{LIDAR ONLY}, & \text{se } Valid_{\text{lidar}} \land \neg Valid_{\text{camera}} \\ \text{CAMERA ONLY}, & \text{se } \neg Valid_{\text{lidar}} \land Valid_{\text{camera}} \\ \text{NO SENSOR}, & \text{se } \neg Valid_{\text{lidar}} \land \neg Valid_{\text{camera}} \end{cases}$$
+O objetivo não é apenas explicar os algoritmos utilizados, mas também registrar como as diferentes partes do código se conectam para que futuros membros da microdivisão consigam compreender, executar e modificar o sistema.
 
 ---
 
-## 2. Etapas do Pipeline de Processamento (6 Estágios)
+## 1. Visão geral
+
+O sistema recebe uma nuvem de pontos tridimensional produzida pelo LiDAR LeiShen CH128X1.
+
+A partir dessa nuvem, o processamento busca identificar grupos de pontos que correspondam aos cones da pista.
+
+De forma simplificada:
 
 ```text
-[Entrada PointCloud2] 
-       │
-       ▼
-[1. ROI Filter (Prisma + Square)]
-       │
-       ▼
-[2. Floor Removal (MLESAC)]
-       │
-       ▼
-[3. Fast Euclidean Clustering (DBSCAN)]
-       │
-       ▼
-[4. Restauração Cilíndrica]
-       │
-       ▼
-[5. Filtros Geométricos (Score Gaussiano)]
-       │
-       ▼
-[6. Coloração & Publicação (Float32MultiArray)]
+                 LiDAR
+                   │
+                   ▼
+              PointCloud2
+                   │
+                   ▼
+            Região de interesse
+                   │
+                   ▼
+           Remoção do chão
+              (MLESAC)
+                   │
+                   ▼
+             Clusterização
+                   │
+                   ▼
+              Restauração
+                   │
+                   ▼
+         Filtro geométrico
+                   │
+                   ▼
+            Cones detectados
+                   │
+                   ├───────────────┐
+                   │               │
+                   ▼               ▼
+              LiDAR only       LiDAR + ZED
+                   │               │
+                   │               ▼
+                   │        classificação de cor
+                   │               │
+                   └───────┬───────┘
+                           ▼
+                         saída
 ```
-### Passo 1: Filtragem da Região de Interesse (ROI)
 
-Dado o conjunto de pontos bruto $P$, aplicamos um filtro de prisma retangular gerando o conjunto reduzido $F$:
-$$F = \{ (x_i, y_i, z_i) \in P \mid x_{\min} \le x_i \le x_{\max} ; y_{\min} \le y_i \le y_{\max} ; z_{\min} \le z_i \le z_{\max} \}$$
+O pipeline é implementado principalmente pelo pacote `detector_pkg`.
 
-Quando há detecções da câmera ZED 2i disponíveis, o ROI é refinado: para cada cone estimado pela visão, retém-se apenas os pontos dentro de um quadrado de lado $POINT\_CONE\_DISTANCE$ centrado na posição do cone.
+---
 
-### Passo 2: Remoção do Solo com MLESAC
+## 2. Arquitetura do código
 
-Utiliza-se o MLESAC (Maximum Likelihood Estimation Sample Consensus) em uma versão simplificada da nuvem de pontos $F'$ (obtida via amostragem por Voxel Grid).Para cada plano candidato $\theta_i$, avalia-se a verossimilhança dos pontos inliers através de uma distribuição Gaussiana:
-$$L_{\text{inlier}}(D \mid \theta_i) = \frac{1}{\sqrt{2\pi \sigma^2}} \exp\left(-\frac{\text{dist}^2}{2\sigma^2}\right)$$
-O plano do solo ideal $\theta_{\text{best}}$ é o que maximiza o log da verossimilhança. Os pontos com distância do plano menor que o limiar estipulado são removidos.
+Os principais arquivos relacionados ao processamento são:
 
-### Passo 3: Clusterização Euclidiana Rápida
-Aplica-se uma variação do algoritmo DBSCAN. Definindo o parâmetro minPts = 1, o algoritmo torna-se equivalente à clusterização por conectividade espacial euclidiana pura.
+| Arquivo | Responsabilidade |
+|---|---|
+| `main.py` | Nó ROS 2 principal e execução do pipeline |
+| `constants.py` | Parâmetros utilizados pelo processamento |
+| `ROI.py` | Filtragem da região de interesse |
+| `MLESAC.py` | Estimativa e remoção do plano do chão |
+| `clustering.py` | Agrupamento dos pontos e cálculo dos centroides |
+| `geometric_filters.py` | Extração de características e classificação dos clusters |
+| `fusio_engine.py` | Processamento das detecções da ZED e fusão com LiDAR |
+| `transform.py` | Transformação das coordenadas da ZED para o referencial utilizado pelo LiDAR |
+| `artificial_lidar.py` | Publicação de nuvem de pontos artificial |
+| `artificial_framing_lidar.py` | Reprodução de nuvens de pontos armazenadas |
+| `artificial_zed.py` | Publicação de detecções artificiais da ZED |
 
-### Passo 4: Restauração Cilíndrica
-Cones que perderam pontos na base durante a etapa de remoção do solo são restaurados. Para cada centroide de cluster $(C_x, C_y, C_z)$, busca-se na nuvem original $F'$ os pontos que estão em um volume cilíndrico vertical:$$R = \{ (x_i, y_i, z_i) \in F' \mid \sqrt{(C_x - x_i)^2 + (C_y - y_i)^2} \le \text{XY}_{\text{THRESHOLD}} \land Z_{\min} \le C_z \le Z_{\max} \}$$
+O arquivo `main.py` coordena essas etapas e conecta o processamento aos tópicos ROS 2.
 
-### Passo 5: Filtros Geométricos e Pontuação Gaussiana
-Cada cluster é avaliado segundo as dimensões regulamentares de cones da Formula Student (altura, diâmetro, razão altura/base, elongação AABB, comprimento da diagonal AABB, quantidade de pontos e altura do centroide).
+---
 
-Para cada métrica, calcula-se um score Gaussiano usando médias e desvios padrão calibrados. Os scores são somados para definir a probabilidade de o objeto ser um cone, aplicando tolerâncias ajustadas para cones distantes.
+## 3. Entradas e saídas
 
-### Passo 6: Coloração e Publicação
-Associa-se cada cluster LiDAR à cor do cone da câmera mais próximo por distância euclidiana. A saída final é publicada em uma mensagem do tipo std_msgs/msg/Float32MultiArray contendo o vetor sequencial $[x_1, y_1, \text{color}_1, x_2, y_2, \text{color}_2, \dots]$.
+### Entrada do LiDAR
+
+O processamento recebe uma mensagem:
+
+```text
+sensor_msgs/msg/PointCloud2
+```
+
+O tópico consumido pelo nó é definido em:
+
+```python
+LIDAR_TOPIC_TO_BE_SUBSCRIBED
+```
+
+no arquivo `constants.py`.
+
+### Entrada da câmera
+
+Quando utilizada, a informação da ZED é recebida através do tópico definido por:
+
+```python
+CAMERA_TOPIC_TO_BE_SUBSCRIBED
+```
+
+A informação contém as coordenadas dos cones detectados pela câmera e sua classificação de cor.
+
+### Saída
+
+As detecções finais são organizadas em grupos de três valores:
+
+```text
+[x, y, color]
+```
+
+Assim, uma mensagem com vários cones possui a estrutura:
+
+```text
+[x1, y1, color1, x2, y2, color2, ...]
+```
+
+As coordenadas utilizadas na saída correspondem à posição dos cones detectados pelo processamento LiDAR.
+
+---
+
+## 4. Fluxo do processamento
+
+O processamento principal pode ser entendido como seis etapas:
+
+1. **Filtragem da região de interesse (ROI)**
+2. **Remoção do chão utilizando MLESAC**
+3. **Clusterização dos pontos**
+4. **Restauração de pontos**
+5. **Classificação geométrica dos clusters**
+6. **Coloração e publicação**
+
+Cada etapa recebe o resultado da anterior e reduz progressivamente a nuvem até chegar aos objetos considerados cones.
+
+---
+
+## 5. Gerenciamento dos sensores
+
+O nó de processamento acompanha a disponibilidade das mensagens do LiDAR e da câmera.
+
+Para isso, as mensagens recebidas são armazenadas e um temporizador verifica se os dados são recentes o suficiente para serem utilizados.
+
+O sistema considera quatro situações:
+
+```text
+                 LiDAR válido?
+                 /           \
+              sim             não
+              /                 \
+       câmera válida?       câmera válida?
+        /       \             /       \
+      sim       não         sim       não
+       │         │           │         │
+     BOTH    LIDAR ONLY  CAMERA ONLY  NO SENSOR
+```
+
+A intenção desse mecanismo é permitir que o sistema continue utilizando um sensor quando o outro estiver indisponível ou atrasado.
+
+---
+
+## 6. Região de Interesse (ROI)
+
+A primeira filtragem reduz a quantidade de pontos que será processada.
+
+O filtro considera limites mínimos e máximos para as três coordenadas:
+
+```text
+xmin ≤ x ≤ xmax
+ymin ≤ y ≤ ymax
+zmin ≤ z ≤ zmax
+```
+
+Os limites são definidos em `constants.py`.
+
+Quando existem detecções provenientes da ZED, o processamento pode utilizar essas posições para restringir ainda mais a região considerada.
+
+Para cada cone detectado pela câmera, são considerados pontos do LiDAR próximos à posição estimada do cone.
+
+O parâmetro:
+
+```python
+POINT_CONE_DISTANCE
+```
+
+define essa distância.
+
+---
+
+## 7. Remoção do chão — MLESAC
+
+Depois da filtragem inicial, a nuvem ainda contém os pontos correspondentes ao chão.
+
+O pipeline utiliza MLESAC para estimar o plano que representa o solo.
+
+De forma conceitual:
+
+```text
+Nuvem filtrada
+      │
+      ▼
+Downsampling
+      │
+      ▼
+Geração de planos candidatos
+      │
+      ▼
+Avaliação dos candidatos
+      │
+      ▼
+Melhor plano
+      │
+      ▼
+Remoção dos pontos próximos ao plano
+      │
+      ▼
+Nuvem sem o chão
+```
+
+A implementação utiliza uma região específica da nuvem e um voxel grid para reduzir a quantidade de pontos utilizada na estimativa.
+
+Os principais parâmetros relacionados ao MLESAC estão em `constants.py`, incluindo:
+
+```text
+XMIN
+XMAX
+YMIN
+YMAX
+VOXEL_LEAF_SIZE
+NUM_PLANES
+INLIER_PROB
+P_OUTLIER
+DIST2PLANE_THRESHOLD
+INLIER_STD_DEV
+```
+
+---
+
+## 8. Clusterização
+
+Após a remoção do chão, os pontos restantes precisam ser separados em objetos.
+
+O arquivo `clustering.py` implementa essa etapa utilizando o `DBSCAN` da biblioteca Scikit-learn.
+
+A configuração utilizada é:
+
+```text
+eps = RADIUS_THRESHOLD
+min_samples = 1
+```
+
+Com `min_samples = 1`, o algoritmo é utilizado pela equipe como uma forma de **Euclidean Clustering**, agrupando pontos de acordo com sua conectividade espacial.
+
+O resultado é um rótulo para cada ponto:
+
+```text
+Point 1 → cluster 0
+Point 2 → cluster 0
+Point 3 → cluster 1
+Point 4 → cluster 1
+...
+```
+
+Esses rótulos são posteriormente convertidos em um dicionário no formato:
+
+```text
+cluster_id → pontos pertencentes ao cluster
+```
+
+Por fim, o centroide de cada cluster é calculado pela média das coordenadas dos seus pontos.
+
+---
+
+## 9. Restauração de pontos
+
+A remoção do chão pode remover pontos que pertencem à parte inferior dos cones.
+
+Para recuperar parte dessas informações, o pipeline possui uma etapa de restauração.
+
+A partir do centroide de cada cluster, são procurados pontos na nuvem utilizada anteriormente que estejam próximos à sua posição.
+
+A ideia é:
+
+```text
+Antes da restauração:
+
+      • •
+    • • •
+      ↑
+   cluster
+
+──────────── chão removido ────────────
+
+
+Depois da restauração:
+
+      • •
+    • • •
+   • • • •
+      ↑
+   cluster restaurado
+```
+
+A distância utilizada nessa busca é definida pelos parâmetros de restauração em `constants.py`.
+
+---
+
+## 10. Classificação geométrica
+
+Nem todo cluster corresponde a um cone.
+
+Por isso, cada cluster é analisado utilizando características geométricas.
+
+O código considera, entre outras:
+
+- diâmetro;
+- extensão vertical;
+- razão altura/base;
+- desvio padrão em Z;
+- elongação da caixa delimitadora;
+- diagonal da caixa delimitadora;
+- altura do centroide;
+- quantidade de pontos;
+- omnivariance.
+
+Essas características são comparadas com valores esperados para clusters correspondentes a cones.
+
+Existe também uma quantidade mínima de pontos:
+
+```python
+MIN_LEN
+```
+
+Clusters que não possuem pontos suficientes são descartados antes da avaliação.
+
+O resultado da classificação é uma pontuação utilizada para decidir se o cluster deve ser considerado um cone.
+
+---
+
+## 11. Fusão com a ZED
+
+Quando informações da câmera estão disponíveis, o processamento pode associar os cones encontrados pelo LiDAR às detecções da ZED.
+
+O processo utiliza a proximidade entre as posições dos cones.
+
+A informação da câmera também fornece a classificação de cor.
+
+De forma simplificada:
+
+```text
+              LiDAR
+                │
+                ▼
+        clusters detectados
+                │
+                │ posição
+                ▼
+          associação espacial
+                ▲
+                │ posição + cor
+                │
+                ZED
+```
+
+A associação utiliza `POINT_CONE_DISTANCE` como limite de proximidade.
+
+Quando a câmera não está disponível, o sistema também possui uma forma de produzir uma classificação de cor baseada apenas no LiDAR.
+
+---
+
+## 12. Dados artificiais
+
+O pacote possui nós auxiliares que permitem testar o pipeline sem utilizar diretamente os sensores físicos.
+
+### `artificial_lidar`
+
+Carrega uma nuvem de pontos armazenada em arquivo e a publica como `PointCloud2`.
+
+### `framing_lidar`
+
+Percorre uma pasta de nuvens de pontos e publica os arquivos sequencialmente.
+
+### `artificial_zed`
+
+Publica um conjunto de detecções de cones simuladas.
+
+Esses nós são úteis para desenvolvimento e testes, pois permitem reproduzir entradas conhecidas para o pipeline.
+
+---
+
+## 13. Parâmetros
+
+Os principais parâmetros do pipeline estão concentrados em:
+
+```text
+constants.py
+```
+
+Entre eles estão os limites da ROI, parâmetros do MLESAC, distância de clusterização, parâmetros de restauração e dimensões esperadas dos cones.
+
+Ao alterar o comportamento do detector, esse arquivo é um dos primeiros locais que devem ser consultados.
+
+---
+
+## 14. Limitações conhecidas
+
+A documentação deve registrar também as limitações conhecidas do sistema, especialmente aquelas que podem afetar futuras decisões de desenvolvimento.
+
+O README do projeto `lidar-perception-node` destaca, entre outros pontos, a necessidade de melhorias na fusão entre câmera e LiDAR, no gerenciamento do estado dos sensores e no tratamento de movimento da nuvem de pontos em velocidades maiores.
+
+Esses pontos devem ser considerados juntamente com o roadmap da microdivisão.

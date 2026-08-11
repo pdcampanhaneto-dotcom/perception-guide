@@ -1,58 +1,92 @@
-#  Guia de Instalação e Configuração de Hardware
+# Guia de Instalação e Configuração de Hardware
 
-Este guia descreve o processo passo a passo para configurar os sensores e dispositivos de comunicação do subsistema de Percepção do zero em uma nova máquina (Ubuntu 22.04 LTS + ROS 2 Humble).
+Este documento apresenta os procedimentos necessários para preparar uma máquina para trabalhar com os sensores utilizados pela microdivisão de Percepção do Driverless.
 
 ---
 
-## 1. Câmera Stereolabs ZED 2i
+## 1. LiDAR LeiShen CH128X1
 
-### Pré-requisitos
-* GPU NVIDIA com drivers proprietários instalados (`nvidia-smi` funcionando).
-* CUDA Toolkit (versão recomendada pelo SDK da Stereolabs para Jetson/PC).
+O LiDAR utilizado pela equipe é o **LeiShen CH128X1**. A comunicação com o computador é realizada por Ethernet, utilizando uma conexão de rede local entre o computador e o sensor.
 
-### Passo a Passo de Instalação
-1. Baixar o SDK da ZED:
-    ```bash
-    wget [https://download.stereolabs.com/zedsdk/4.0/cu118/ubuntu22](https://download.stereolabs.com/zedsdk/4.0/cu118/ubuntu22) -O ZED_SDK.run
-    chmod +x ZED_SDK.run
-    ./ZED_SDK.run
-2. Configurar Regras de Permissão USB (udev rules):
-    ```Bash
-    sudo usermod -aG dialout $USER
-3. Instalar o ROS 2 Wrapper da ZED:
-    ```Bash
-    cd ~/ros2_ws/src
-    git clone --recursive [https://github.com/stereolabs/zed-ros2-wrapper.git](https://github.com/stereolabs/zed-ros2-wrapper.git)
-    cd ~/ros2_ws
-    rosdep install --from-paths src --ignore-src -r -y
-    colcon build --symlink-install --packages-up-to zed_wrapper
-4. Validação:
-    Conecte a ZED 2i em uma porta USB 3.0 (Azul/USB-C) e execute:
-    ZED_Explorer (para testar vídeo/imagem) ou ZED_Diagnostic (para verificar sensores inerciais).
+### 1.1 Driver
 
-## 2. Sensor LiDAR
-### Configuração da Interface de Rede (IP Estático)
-Os sensores LiDAR transmitem pacotes UDP via Ethernet. A placa de rede do computador/Jetson deve estar na mesma sub-rede do sensor.
-1. Identificar a interface Ethernet:
-ip a ou nmcli device (exemplo: eth0 ou enp3s0).
-2. Configurar IP Estático na Máquina:
-IP da Máquina: 192.168.1.100 (exemplo)
-Máscara: 255.255.255.0 (/24)
-Gateway: Deixar em branco ou 192.168.1.1
-3. Instalar Driver ROS 2 do LiDAR:
-    ```Bash 
-    cd ~/ros2_ws/src
-    # Clonar o repositório do driver do LiDAR (exemplo para Velodyne/Hesai/Ouster)
-    git clone [https://github.com/ros-drivers/velodyne.git](https://github.com/ros-drivers/velodyne.git) -b humble-devel
-    cd ~/ros2_ws
-    colcon build --packages-select velodyne
-## 3. Antenas e Telemetria (Serial / USB)
-1. Mapeamento de Portas Seriais:
+O driver ROS 2 do LiDAR pode ser obtido diretamente no repositório do fabricante. A equipe também mantém uma cópia dos arquivos do driver no Google Drive:
 
-    Para evitar que a porta do rádio/antena mude entre /dev/ttyUSB0 e /dev/ttyUSB1, configure uma regra de udev:
-    ```Bash
-    # Identificar o vendorID e productID do dispositivo
-    lsusb
-    # Criar o arquivo de regra personalizada
-    echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="XXXX", ATTRS{idProduct}=="YYYY", SYMLINK+="telemetry_antenna"' | sudo tee /etc/udev/rules.d/99-telemetry.rules
-    sudo udevadm control --reload-rules && sudo udevadm trigger
+[Driver LSLiDAR — Google Drive da equipe](https://drive.google.com/drive/folders/1seugpC1GXATPf5KhsMkJyf09zj-AvZNO?usp=sharing&utm_source=chatgpt.com)
+
+O pacote utilizado pela equipe contém o driver específico para o LiDAR CH128X1.
+
+> **Importante:** o driver possui um arquivo `README_en.md` com as instruções de instalação e das dependências. Essas instruções devem ser consultadas durante a configuração de uma máquina nova.
+
+### 1.2 Configuração da interface Ethernet
+
+O LiDAR transmite os dados pela interface Ethernet. Para que o computador consiga se comunicar com o sensor, sua interface de rede deve estar configurada na mesma sub-rede do LiDAR.
+
+No Ubuntu:
+
+1. Abra **Configurações → Rede → Wired**.
+2. Crie ou edite um perfil de conexão Ethernet.
+3. Configure manualmente o IPv4 para a rede utilizada pelo LiDAR.
+4. Conecte o LiDAR ao computador através do cabo Ethernet.
+
+O endereço utilizado pelo LiDAR é:
+
+```text
+192.168.1.102
+```
+
+A configuração exata do endereço IP do computador deve ser mantida de acordo com a configuração utilizada pela equipe.
+
+### 1.3 Teste de comunicação
+
+Depois de conectar o sensor e configurar a interface Ethernet, verifique a comunicação executando:
+
+```bash
+ping 192.168.1.102
+```
+
+Se o computador receber respostas do endereço `192.168.1.102`, existe comunicação de rede com o LiDAR.
+
+Caso o `ping` não funcione, o problema deve ser investigado na configuração da interface Ethernet, no cabo ou na conexão com o sensor antes de prosseguir para o ROS 2.
+
+---
+
+## 2. Compilação dos pacotes ROS 2
+
+Os drivers do LiDAR são pacotes ROS 2 e precisam ser compilados no ambiente em que serão executados.
+
+Após instalar as dependências indicadas pelo `README_en.md` de cada pacote, compile os pacotes utilizando `colcon build`.
+
+Durante a configuração de uma máquina nova, pode ser necessário remover os diretórios de compilação anteriores:
+
+```bash
+rm -rf build install log
+```
+
+e então executar:
+
+```bash
+colcon build
+```
+
+Depois da compilação:
+
+```bash
+source install/setup.bash
+```
+
+### 2.1 Por que limpar `build`, `install` e `log`?
+
+A equipe encontrou esse procedimento como uma etapa importante principalmente ao transferir o ambiente entre máquinas diferentes.
+
+Isso é especialmente relevante em computadores **Jetson**, cuja arquitetura é diferente da de um computador convencional. Arquivos previamente compilados em outra máquina podem não ser compatíveis com a arquitetura de destino.
+
+Por isso, ao transferir os pacotes para outra máquina, especialmente uma Jetson, a recomendação é remover os arquivos de compilação existentes e recompilar os pacotes na própria máquina.
+
+---
+
+## 3. Outros sensores
+
+A configuração da câmera ZED 2i e dos demais equipamentos da percepção deve ser documentada conforme os procedimentos efetivamente utilizados pela equipe.
+
+> **Nota para futuros membros:** este documento deve ser atualizado sempre que o procedimento oficial de instalação de um sensor mudar. Evite copiar instruções de versões antigas do sistema sem verificar a configuração atualmente utilizada pela equipe.

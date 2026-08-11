@@ -1,48 +1,88 @@
-# Percepção Driverless — Unicamp E-Racing (SAUVA)
+# Percepção Driverless — Unicamp E-Racing
 
-Bem-vindo ao repositório do subsistema de **Percepção** da plataforma autônoma **SAUVA**. Este repositório contém os pacotes ROS 2 responsáveis pela detecção, classificação e estimativa 3D dos cones delimitadores da pista.
+Bem-vindo à documentação do subsistema de **Percepção** do SAUVA.
 
----
-
-## Documentação Rápida & Links Úteis
-
-Para acessar os guias detalhados de instalação, uso e arquitetura, clique nos links abaixo:
-
-* [**Guia de Instalação de Hardware (ZED, LiDAR, Telemetria)**](docs/01_hardware_setup.md) — *Leia este guia se estiver configurando uma nova máquina do zero.*
-* [**Manual de Operação e Debug do LiDAR**](docs/02_lidar_guide.md) — *Configuração de IP, drivers, RViz e solução de problemas.*
-* [**Explicação do Código e Processamento de Cones**](docs/03_code_explanation.md) — *Entenda o que recebemos dos sensores e a matemática da detecção.*
-* [**Padrões de Código, Git e ROS 2**](docs/04_standards.md) — *Regras de contribuição e guia de estilo.*
-* [**Roadmap e Passos Futuros**](docs/05_roadmap_future.md) — *Próximas otimizações e metas de pesquisa.*
+A percepção é responsável por obter informações dos sensores do veículo e produzir as detecções utilizadas pelos demais sistemas do Driverless, incluindo a detecção e classificação dos cones da pista.
 
 ---
 
-## Repositórios e Recursos Oficiais de Percepção
+## Documentação
 
-| Recurso | Descrição | Link / Acesso |
-| :--- | :--- | :--- |
-| 📁 **Driver LSLiDAR (V5.0.9)** | Driver pré-configurado do fabricante para ROS 2 | [Google Drive](https://drive.google.com/drive/folders/1seugpC1GXATPf5KhsMkJyf09zj-AvZNO?usp=sharing) |
-| 🐙 **Nó de Processamento LiDAR (GitHub)** | Código do Kobata para extração de cones com README explicativo | [GitHub eduardokobata](https://github.com/eduardokobata/lidar-perception-node) |
-| 🦊 **Nó de Processamento LiDAR (GitLab)** | Branch oficial no repositório do SAUVA | [GitLab SAUVA](https://gitlab.com/unicamperacing/autonomous-systems/driverless/sauva/perception/repositories/lidar/processing/) |
-| 📖 **Guia do LSLiDAR** | Manual de IP, comandos de launch e limpeza de build | [docs/02_lidar_guide.md](docs/02_lidar_guide.md) |
+| Documento | Conteúdo |
+|---|---|
+| [01 — Hardware Setup](docs/01_hardware_setup.md) | Instalação e configuração da ZED 2i, LiDAR e demais dispositivos utilizados pela percepção. |
+| [02 — LiDAR Guide](docs/02_lidar_guide.md) | Configuração de rede, instalação do driver, execução do LiDAR, visualização no RViz2 e diagnóstico básico. |
+| [03 — Code Explanation](docs/03_code_explanation.md) | Funcionamento do pipeline de processamento do LiDAR e sua integração com a ZED 2i. |
+| [04 — Standards](docs/04_standards.md) | Organização do código, parâmetros, testes e práticas para manutenção do projeto. |
+| [05 — Roadmap](docs/05_roadmap_future.md) | Limitações conhecidas e possíveis linhas de desenvolvimento futuro. |
 
 ---
 
-## Quickstart (Para quem já tem o ambiente configurado)
+## Repositórios e recursos
 
-```bash
-# 1. Clonar e compilar o workspace
-cd ~/ros2_ws
-colcon build --packages-up-to perception_bringup
+### Driver do LiDAR
 
-# 2. Carregar o ambiente
-source install/setup.bash
+O driver do LeiShen CH128X1 é disponibilizado pelo fabricante para ROS 2.
 
-# 3. Iniciar o pipeline completo com visualização no RViz2
-ros2 launch perception_bringup perception.launch.py use_rviz:=true
+Uma cópia do driver utilizado pela equipe está disponível no Google Drive da equipe.
+
+### Processamento do LiDAR
+
+O processamento responsável pela extração dos cones está disponível em:
+
+- **GitHub:** `lidar-perception-node`
+- **GitLab da equipe:** repositório oficial do processamento de LiDAR
+
+O GitHub contém uma explicação mais detalhada do funcionamento do pipeline.
+
+---
+
+## Visão geral
+
+De maneira simplificada:
+
+```text
+              ┌──────────────┐
+              │    LiDAR     │
+              └──────┬───────┘
+                     │
+               PointCloud2
+                     │
+                     ▼
+              ┌──────────────┐
+              │   Pipeline   │
+              │    LiDAR     │
+              └──────┬───────┘
+                     │
+              Cones detectados
+                     │
+                     ▼
+              ┌──────────────┐
+              │    ZED 2i    │
+              │     Fusão    │
+              └──────┬───────┘
+                     │
+                     ▼
+             Informação dos cones
 ```
 
-## Contato e Suporte
-    Diretor de percepção: Kobata
-    Membro: Campanha
+Para configurar uma máquina nova, comece pelo **01 — Hardware Setup**.
 
-    Micro-divisão de Percepção: Unicamp E-Racing Driverless
+Para colocar o LiDAR em funcionamento, consulte o **02 — LiDAR Guide**.
+
+Para entender o funcionamento do algoritmo, consulte o **03 — Code Explanation**.
+
+---
+
+## Desenvolvimento
+
+Antes de modificar o pipeline, recomenda-se ler o documento de explicação do código e verificar os procedimentos de teste.
+
+Alterações relevantes no comportamento do sistema devem ser registradas na documentação para que possam ser compreendidas pelas próximas gerações da equipe.
+
+---
+
+## Micro-divisão
+
+**Unicamp E-Racing — Driverless**  
+**Perception**
