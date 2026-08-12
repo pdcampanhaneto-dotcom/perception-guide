@@ -29,7 +29,7 @@ No Ubuntu:
 3. Configure manualmente o IPv4 para a rede utilizada pelo LiDAR.
 4. Conecte o LiDAR ao computador através do cabo Ethernet.
 
-O endereço utilizado pelo LiDAR é:
+No ambiente atualmente utilizado pela equipe, o LiDAR é acessado pelo endereço:
 
 ```text
 192.168.1.102
@@ -87,6 +87,10 @@ Por isso, ao transferir os pacotes para outra máquina, especialmente uma Jetson
 
 ## 3. Outros sensores
 
-A configuração da câmera ZED 2i e dos demais equipamentos da percepção deve ser documentada conforme os procedimentos efetivamente utilizados pela equipe.
+A configuração da câmera ZED 2i e dos demais equipamentos da percepção
+deve ser documentada conforme os procedimentos efetivamente utilizados pela equipe.
+
+A documentação específica da ZED está sendo consolidada a partir dos arquivos
+mantidos no GitLab e dos materiais utilizados pela equipe..
 
 > **Nota para futuros membros:** este documento deve ser atualizado sempre que o procedimento oficial de instalação de um sensor mudar. Evite copiar instruções de versões antigas do sistema sem verificar a configuração atualmente utilizada pela equipe.

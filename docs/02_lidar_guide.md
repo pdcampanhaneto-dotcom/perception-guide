@@ -109,6 +109,7 @@ Para verificar o tipo de uma publicação:
 
 ```bash
 ros2 topic type <nome_do_topico>
+ros2 topic info <nome_do_topico>
 ```
 
 O tópico utilizado pelo processamento deve ser do tipo:
