@@ -10,7 +10,7 @@ O LiDAR utilizado pela equipe é o **LeiShen CH128X1**. A comunicação com o co
 
 ### 1.1 Driver
 
-O driver ROS 2 do LiDAR pode ser obtido diretamente no repositório do fabricante. A equipe também mantém uma cópia dos arquivos do driver no Google Drive:
+O driver ROS 2 do LiDAR pode ser obtido diretamente no [repositório do fabricante](https://github.com/Lslidar/Lslidar_ROS2_driver/tree/LS-S1_V1.0). A equipe também mantém uma cópia dos arquivos do driver no Google Drive:
 
 [Driver LSLiDAR — Google Drive da equipe](https://drive.google.com/drive/folders/1seugpC1GXATPf5KhsMkJyf09zj-AvZNO?usp=sharing&utm_source=chatgpt.com)
 
