@@ -85,12 +85,81 @@ Por isso, ao transferir os pacotes para outra máquina, especialmente uma Jetson
 
 ---
 
-## 3. Outros sensores
+## 3. Câmera ZED 2i
 
-A configuração da câmera ZED 2i e dos demais equipamentos da percepção
-deve ser documentada conforme os procedimentos efetivamente utilizados pela equipe.
+A Percepção utiliza uma câmera **Stereolabs ZED 2i** para a detecção visual dos cones.
 
-A documentação específica da ZED está sendo consolidada a partir dos arquivos
-mantidos no GitLab e dos materiais utilizados pela equipe..
+O código utilizado pela equipe está mantido no repositório da percepção no GitLab.
+
+A documentação de instalação da ZED deve distinguir entre:
+
+- **ambiente da câmera:** ZED SDK e suas dependências;
+- **modelo de detecção:** YOLO e seus pesos;
+- **integração com o código da equipe:** `cameraProcessing.py`, `main.py` e `dataProcessing.py`.
+
+### 3.1 Estado atual da instalação
+
+O código da câmera utilizado pela equipe já foi identificado e testado, porém o procedimento completo para reproduzir o ambiente de execução a partir de uma máquina limpa ainda não está formalizado nesta documentação.
+
+Por isso, não devem ser considerados oficiais comandos de instalação obtidos apenas de tutoriais externos sem verificar sua compatibilidade com o ambiente utilizado pela equipe.
+
+### 3.2 Componentes utilizados
+
+O funcionamento da câmera depende dos seguintes componentes:
+
+```text
+ZED 2i
+   │
+   ▼
+ZED SDK
+   │
+   ▼
+Python API (`pyzed.sl`)
+   │
+   ▼
+YOLO
+   │
+   ▼
+Código da câmera
+   │
+   ▼
+ROS 2
+```
+
+A configuração específica desses componentes deve ser registrada assim que o procedimento utilizado pela equipe puder ser reproduzido integralmente.
+
+### 3.3 Verificação
+
+Depois de configurado o ambiente, a câmera deve ser testada antes da integração com o restante da percepção.
+
+A validação deve verificar:
+
+- se a ZED é reconhecida;
+- se imagens podem ser capturadas;
+- se o modelo de detecção é carregado;
+- se os cones são detectados;
+- se o resultado possui o formato esperado pelo restante do sistema.
+
+### 3.4 Integração com ROS 2
+
+O nó responsável pela publicação das detecções da câmera publica:
+
+```text
+camera_cones
+```
+
+com o tipo:
+
+```text
+std_msgs/msg/Float32MultiArray
+```
+
+As detecções são representadas como grupos:
+
+```text
+[x, y, color]
+```
+
+O funcionamento detalhado da câmera, do YOLO e da publicação ROS 2 está documentado em `03_code_explanation.md`.
 
 > **Nota para futuros membros:** este documento deve ser atualizado sempre que o procedimento oficial de instalação de um sensor mudar. Evite copiar instruções de versões antigas do sistema sem verificar a configuração atualmente utilizada pela equipe.
