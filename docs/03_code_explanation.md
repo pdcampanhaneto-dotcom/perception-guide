@@ -4,7 +4,7 @@ Este documento descreve o funcionamento do software de percepção utilizado pel
 
 O objetivo é registrar como os dados provenientes do **LiDAR LeiShen CH128X1** e da **câmera ZED 2i** são processados para obter as detecções dos cones da pista, além de explicar como os principais módulos do código se relacionam.
 
-O documento possui caráter de transferência de conhecimento: um novo membro deve conseguir utilizá-lo para compreender a arquitetura atual e localizar no código cada etapa do processamento.
+O documento possui caráter de transferência de conhecimento: um novo membro deve conseguir utilizá-lo para compreender a arquitetura atual, localizar cada etapa no código e entender quais informações são trocadas entre os sensores e os nós ROS 2.
 
 ---
 
@@ -13,34 +13,40 @@ O documento possui caráter de transferência de conhecimento: um novo membro de
 O sistema de percepção utiliza principalmente dois sensores:
 
 - **LiDAR LeiShen CH128X1**, utilizado para obter uma nuvem de pontos tridimensional;
-- **ZED 2i**, utilizada para detectar os cones na imagem e fornecer sua posição e classificação de cor.
+- **ZED 2i**, utilizada para detectar cones na imagem e fornecer informações espaciais e de classificação que são utilizadas pelo processamento.
 
 A arquitetura geral pode ser resumida como:
 
 ```text
-                    PERCEPÇÃO
-                        │
-             ┌──────────┴──────────┐
-             │                     │
-           LiDAR                  ZED 2i
-             │                     │
-             ▼                     ▼
-        PointCloud2             imagem
-             │                     │
-             │                  YOLOv8
-             │                     │
-             │                     ▼
-             │              detecções dos cones
-             │                     │
-             └──────────┬──────────┘
-                        │
-                  Fusão sensorial
-                        │
-                        ▼
-                  cones detectados
+                         PERCEPÇÃO
+                             │
+             ┌───────────────┴───────────────┐
+             │                               │
+           LiDAR                            ZED 2i
+             │                               │
+             ▼                               ▼
+        PointCloud2                       imagem
+             │                               │
+             │                            YOLO
+             │                               │
+             │                               ▼
+             │                       bounding boxes
+             │                               │
+             │                               ▼
+             │                           ZED SDK
+             │                               │
+             │                         posição + cor
+             │                               │
+             └───────────────┬───────────────┘
+                             ▼
+                      Processamento
+                      / Fusão sensorial
+                             │
+                             ▼
+                       cones detectados
 ```
 
-De forma mais detalhada, o processamento do LiDAR segue:
+O pipeline LiDAR possui, de forma simplificada, as seguintes etapas:
 
 ```text
 PointCloud2
@@ -70,24 +76,24 @@ Clusters considerados cones
 LiDAR only             LiDAR + ZED
     │                       │
     │                       ▼
-    │                 associação com
-    │                    detecções
+    │             associação com
+    │              detecções ZED
     │                       │
     │                       ▼
     │                  cor da ZED
     │                       │
-    └───────────┬───────────┘
-                ▼
-         saída final dos cones
+    └────────────┬──────────┘
+                 ▼
+          saída dos cones
 ```
 
-O nó principal responsável por coordenar esse processo é o `lidar_node`, implementado em `main.py`.
+O nó `lidar_node`, implementado em `main.py`, coordena o recebimento dos dados e as etapas do processamento.
 
 ---
 
 # 2. Arquitetura do código
 
-Os principais módulos utilizados pelo processamento são:
+Os principais módulos do processamento LiDAR são:
 
 | Arquivo | Responsabilidade |
 |---|---|
@@ -97,14 +103,20 @@ Os principais módulos utilizados pelo processamento são:
 | `MLESAC.py` | Estimativa e remoção do plano do chão |
 | `clustering.py` | Clusterização e cálculo dos centroides |
 | `geometric_filters.py` | Extração das características dos clusters e classificação geométrica |
-| `fusion_engine.py` | Processamento das informações da ZED e fusão com o LiDAR |
-| `transform.py` | Transformação das coordenadas da ZED para o referencial utilizado pelo LiDAR |
-| `artificial_lidar.py` | Publicação de nuvem de pontos artificial |
-| `artificial_framing_lidar.py` | Reprodução de nuvens de pontos armazenadas |
-| `artificial_zed.py` | Publicação de detecções artificiais da ZED |
-| `auxiliar_tools.py` | Funções auxiliares utilizadas pelo pipeline |
+| `fusion_engine.py` | Operações relacionadas à fusão LiDAR–ZED |
+| `transform.py` | Transformação das coordenadas fornecidas pela ZED |
+| `artificial_lidar.py` | Publicação de uma nuvem de pontos previamente armazenada |
+| `artificial_framing_lidar.py` | Reprodução sequencial de nuvens armazenadas |
+| `artificial_zed.py` | Publicação de detecções ZED simuladas |
+| `auxiliar_tools.py` | Funções auxiliares |
 
-O `main.py` instancia o nó ROS 2, recebe as mensagens dos sensores, decide qual modo de operação deve ser utilizado e executa as etapas de processamento.
+Na parte da ZED, os principais arquivos fornecidos são:
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `cameraProcessing.py` | Inicialização da ZED, inferência YOLO e obtenção das detecções |
+| `main.py` | Interface simples para criação da câmera e execução da medição |
+| `dataProcessing.py` | Nó ROS 2 que publica as detecções produzidas pela ZED |
 
 ---
 
@@ -112,15 +124,15 @@ O `main.py` instancia o nó ROS 2, recebe as mensagens dos sensores, decide qual
 
 ## 3.1 Entrada do LiDAR
 
-O LiDAR publica uma mensagem ROS 2 do tipo:
+O processamento recebe uma mensagem ROS 2 do tipo:
 
 ```text
 sensor_msgs/msg/PointCloud2
 ```
 
-Essa mensagem contém a nuvem de pontos tridimensional observada pelo sensor.
+Essa mensagem representa a nuvem de pontos tridimensional.
 
-O tópico utilizado pelo `lidar_node` é definido em:
+O tópico consumido pelo `lidar_node` é definido em:
 
 ```python
 LIDAR_TOPIC_TO_BE_SUBSCRIBED
@@ -128,7 +140,7 @@ LIDAR_TOPIC_TO_BE_SUBSCRIBED
 
 no arquivo `constants.py`.
 
-Depois de recebida, a mensagem `PointCloud2` é convertida para uma representação NumPy contendo pontos no formato:
+A mensagem é convertida para uma representação NumPy contendo pontos no formato:
 
 ```text
 [x, y, z]
@@ -136,37 +148,42 @@ Depois de recebida, a mensagem `PointCloud2` é convertida para uma representaç
 
 ---
 
-## 3.2 Entrada da ZED
+## 3.2 Entrada da ZED no processamento LiDAR
 
-Quando a informação da câmera está disponível, o `lidar_node` também recebe as detecções produzidas pela ZED.
+O `lidar_node` também possui uma assinatura para receber as detecções da câmera.
 
-O tópico utilizado é definido por:
+O tópico é definido por:
 
 ```python
 CAMERA_TOPIC_TO_BE_SUBSCRIBED
 ```
 
-A informação utilizada pelo processamento possui o formato:
+no arquivo `constants.py`.
+
+No ambiente de teste do processamento LiDAR, uma das fontes possíveis é o nó `artificial_zed`, mas a implementação real da câmera possui seu próprio nó ROS 2, descrito na seção da ZED.
+
+As informações utilizadas pelo processamento possuem o formato:
 
 ```text
 [x, y, color]
 ```
 
-onde:
-
-- `x` e `y` representam a posição do cone utilizada pelo pipeline;
-- `color` representa a classificação de cor fornecida pela câmera.
-
-Antes de ser utilizada pelo pipeline LiDAR, essa informação passa pela transformação definida em `transform.py`.
+Antes de serem utilizadas pelo pipeline LiDAR, essas coordenadas passam pela transformação definida em `transform.py`.
 
 ---
 
-## 3.3 Saída
+## 3.3 Saída do pipeline LiDAR
 
-As detecções finais são publicadas pelo `lidar_node` como:
+As detecções finais do `lidar_node` são publicadas como:
 
 ```text
 std_msgs/msg/Float32MultiArray
+```
+
+no tópico:
+
+```text
+final_array
 ```
 
 A informação é organizada em grupos de três valores:
@@ -184,13 +201,31 @@ Para vários cones:
  ...]
 ```
 
-O tópico utilizado para essa publicação é:
+---
+
+## 3.4 Saída da ZED
+
+O nó ROS 2 da câmera publica suas detecções no tópico:
 
 ```text
-final_array
+camera_cones
 ```
 
-Durante o modo de depuração, o nó também pode publicar informações utilizadas para visualização no RViz2.
+utilizando:
+
+```text
+std_msgs/msg/Float32MultiArray
+```
+
+A mensagem contém os dados produzidos pelo pipeline da câmera em formato achatado.
+
+Cada detecção é representada por:
+
+```text
+[x, y, color]
+```
+
+O arquivo `dataProcessing.py` converte o resultado de `cameraProcessing.py` em uma mensagem ROS 2 e publica o número de cones detectados. 
 
 ---
 
@@ -198,7 +233,7 @@ Durante o modo de depuração, o nó também pode publicar informações utiliza
 
 O `lidar_node` recebe dados do LiDAR e da câmera de forma assíncrona.
 
-As mensagens mais recentes de cada sensor são armazenadas e um temporizador verifica periodicamente se esses dados ainda são considerados recentes.
+As mensagens mais recentes são armazenadas e um temporizador verifica periodicamente se os dados são suficientemente recentes.
 
 O sistema possui quatro estados:
 
@@ -218,19 +253,19 @@ O sistema possui quatro estados:
 
 Os dois sensores estão disponíveis.
 
-Nesse estado, o pipeline utiliza a informação da câmera para auxiliar o processamento do LiDAR.
+Nesse estado, as informações da ZED são utilizadas para auxiliar o processamento do LiDAR.
 
 ### `LIDAR_ONLY`
 
 Somente o LiDAR está disponível.
 
-O pipeline continua realizando a detecção utilizando apenas a nuvem de pontos do sensor.
+O pipeline de processamento da nuvem continua sendo executado.
 
 ### `CAMERA_ONLY`
 
 Somente a câmera está disponível.
 
-O estado existe na máquina de estados do nó, embora o processamento completo de cones nesse modo dependa da implementação disponível para a câmera.
+Esse estado existe na máquina de estados do `lidar_node`, embora o processamento específico desse modo dependa da implementação utilizada no restante do sistema.
 
 ### `NO_SENSOR`
 
@@ -238,9 +273,9 @@ Nenhum dos sensores é considerado disponível.
 
 ---
 
-# 5. Pipeline LiDAR
+# 5. Pipeline do LiDAR
 
-Quando o LiDAR está disponível, a nuvem passa pelas etapas abaixo:
+Quando o LiDAR está disponível, o fluxo principal é:
 
 ```text
 PointCloud2
@@ -267,15 +302,13 @@ Filtro geométrico
 Cones
 ```
 
-Quando a ZED também está disponível, existe uma etapa adicional de filtragem baseada nas posições fornecidas pela câmera antes do MLESAC.
+Quando a ZED está disponível, suas coordenadas são utilizadas na etapa de ROI para concentrar o processamento em regiões próximas às detecções da câmera.
 
 ---
 
 # 6. Região de Interesse (ROI)
 
-A primeira etapa reduz a quantidade de pontos que será processada.
-
-A função `ROIfilter()` aplica um filtro espacial utilizando limites mínimos e máximos para as três coordenadas:
+A função `ROIfilter()` aplica um filtro espacial utilizando limites mínimos e máximos para:
 
 ```text
 xmin ≤ x ≤ xmax
@@ -283,9 +316,7 @@ ymin ≤ y ≤ ymax
 zmin ≤ z ≤ zmax
 ```
 
-Os limites são definidos em `constants.py`.
-
-Os parâmetros utilizados atualmente incluem:
+Os valores são definidos em `constants.py` por:
 
 ```text
 XRMIN
@@ -296,15 +327,13 @@ ZRMIN
 ZRMAX
 ```
 
-O objetivo é descartar pontos que estão fora da região onde os cones podem ser relevantes.
+O objetivo é retirar pontos que estão fora da região relevante para a detecção dos cones.
 
 ---
 
-## 6.1 ROI baseada na ZED
+## 6.1 ROI baseada nas detecções da ZED
 
-Quando existem detecções da ZED, o processamento utiliza também as posições fornecidas pela câmera.
-
-Para cada cone detectado pela ZED, é considerada uma região quadrada ao seu redor.
+Quando a ZED fornece detecções, a função `ROIonZED()` utiliza suas posições para restringir ainda mais a nuvem.
 
 O parâmetro:
 
@@ -312,69 +341,65 @@ O parâmetro:
 POINT_CONE_DISTANCE
 ```
 
-define a distância utilizada para selecionar os pontos do LiDAR próximos às detecções.
+define a distância utilizada ao redor das posições fornecidas pela câmera.
 
-A ideia é:
+O fluxo é:
 
 ```text
-                 ZED
-                  │
-                  ▼
-           posição do cone
-                  │
-          ┌───────┴───────┐
-          │      ROI      │
-          │               │
-          │   • • • •     │
-          │   • cone •    │
-          │   • • • •     │
-          └───────────────┘
-                  │
-                  ▼
-          pontos do LiDAR
-       próximos ao cone
+                  ZED
+                   │
+             cone detectado
+                   │
+              posição [x,y]
+                   │
+                   ▼
+       ┌─────────────────────┐
+       │ região de interesse │
+       │          ●          │
+       └─────────────────────┘
+                   │
+                   ▼
+             pontos LiDAR
 ```
 
-Essa etapa permite concentrar o processamento LiDAR nas regiões nas quais a ZED detectou cones.
+Essa é uma das principais formas pelas quais a informação da ZED é utilizada para melhorar o processamento LiDAR.
 
 ---
 
 # 7. Remoção do chão — MLESAC
 
-Depois da filtragem inicial, a nuvem ainda contém pontos pertencentes ao solo.
+Depois da ROI, a nuvem ainda contém pontos pertencentes ao chão.
 
-O módulo `MLESAC.py` estima um plano que representa o chão e remove os pontos próximos a esse plano.
+O módulo `MLESAC.py` estima um plano que representa o solo e remove os pontos próximos a esse plano.
 
 O processo pode ser resumido como:
 
 ```text
 Nuvem após ROI
-       │
-       ▼
+      │
+      ▼
 Filtro espacial para estimativa
-       │
-       ▼
+      │
+      ▼
 Voxel Grid
-       │
-       ▼
-Geração de planos candidatos
-       │
-       ▼
+      │
+      ▼
+Planos candidatos
+      │
+      ▼
 Avaliação de verossimilhança
-       │
-       ▼
+      │
+      ▼
 Melhor plano
-       │
-       ▼
-Remoção dos pontos próximos ao plano
-       │
-       ▼
+      │
+      ▼
+Remoção do chão
+      │
+      ▼
 Nuvem sem o chão
 ```
 
-A implementação utiliza uma região específica da nuvem para realizar a estimativa do plano e utiliza downsampling por voxel grid para reduzir a quantidade de pontos processados.
-
-Os principais parâmetros estão em `constants.py`:
+Os principais parâmetros são:
 
 ```text
 XMIN
@@ -394,9 +419,9 @@ INLIER_STD_DEV
 
 # 8. Clusterização
 
-Depois da remoção do chão, os pontos restantes são agrupados em conjuntos espacialmente próximos.
+Após a remoção do chão, os pontos restantes são agrupados de acordo com sua proximidade espacial.
 
-O arquivo `clustering.py` utiliza o `DBSCAN` da biblioteca Scikit-learn.
+A implementação está em `clustering.py` e utiliza o `DBSCAN` da biblioteca Scikit-learn.
 
 A configuração utilizada é:
 
@@ -407,95 +432,54 @@ metric = euclidean
 algorithm = kd_tree
 ```
 
-Com `min_samples = 1`, essa implementação é utilizada pela equipe como uma forma de **Euclidean Clustering**, agrupando pontos de acordo com sua conectividade espacial.
+Com `min_samples = 1`, a implementação é utilizada pela equipe como uma forma de **Euclidean Clustering**.
 
-O resultado da clusterização é um rótulo para cada ponto:
+O resultado é um rótulo para cada ponto:
 
 ```text
 Point 1 → cluster 0
 Point 2 → cluster 0
 Point 3 → cluster 1
-Point 4 → cluster 1
 ...
 ```
 
-Posteriormente, esses rótulos são convertidos em um dicionário:
+Depois, os pontos são agrupados em um dicionário:
 
 ```text
 cluster_id → pontos do cluster
 ```
 
-O centroide de cada cluster é calculado pela média das coordenadas de seus pontos.
-
-O parâmetro principal dessa etapa é:
-
-```python
-RADIUS_THRESHOLD
-```
+O centroide de cada cluster é calculado pela média de suas coordenadas.
 
 ---
 
 # 9. Restauração de pontos
 
-A etapa de remoção do chão pode remover pontos que pertencem à parte inferior dos cones.
+A remoção do chão pode retirar pontos da parte inferior de objetos que devem permanecer nos clusters.
 
-Para recuperar parte dessas informações, o pipeline executa uma etapa de restauração.
+Para recuperar parte dessas informações, o pipeline possui uma etapa de restauração.
 
-A partir dos centroides dos clusters, pontos anteriormente removidos junto com o chão são procurados na nuvem original.
+A partir dos centroides dos clusters, são procurados pontos que foram removidos junto com o plano do chão.
 
-O processo utiliza:
+O parâmetro:
 
 ```python
 RADIUS_RESTORATION
 ```
 
-para definir a região inicial de busca.
+define a região inicial de busca.
 
-Posteriormente, outras condições geométricas são utilizadas para determinar quais pontos devem realmente ser reinseridos no cluster.
-
-Conceitualmente:
-
-```text
-Nuvem antes da remoção do chão
-           │
-           ├──────── pontos removidos
-           │
-           ▼
-       clusters
-           │
-           ▼
-       centroides
-           │
-           ▼
- busca por pontos removidos
- próximos aos centroides
-           │
-           ▼
-       clusters
-     restaurados
-```
+Posteriormente, condições adicionais de proximidade são utilizadas para determinar quais pontos serão reinseridos.
 
 ---
 
 # 10. Classificação geométrica
 
-Depois da restauração, cada cluster é avaliado para determinar se possui características compatíveis com um cone.
+Depois da restauração, os clusters são avaliados para verificar se suas características são compatíveis com um cone.
 
 Essa etapa é implementada em `geometric_filters.py`.
 
-Antes da classificação, existe uma quantidade mínima de pontos:
-
-```python
-MIN_LEN
-```
-
-Clusters com quantidade insuficiente de pontos são descartados.
-
----
-
-## 10.1 Características utilizadas
-
-O código extrai características geométricas como:
+Entre as características utilizadas estão:
 
 - diâmetro;
 - extensão vertical;
@@ -507,29 +491,25 @@ O código extrai características geométricas como:
 - quantidade de pontos;
 - omnivariance.
 
-Essas características são comparadas com valores esperados para clusters que correspondam a cones.
+Clusters com quantidade de pontos abaixo do limite definido em:
 
----
+```python
+MIN_LEN
+```
 
-## 10.2 Pontuação
+são descartados.
 
-Cada característica possui valores de referência e uma tolerância que varia de acordo com a distância do cluster.
+As características restantes são comparadas com valores de referência e utilizadas para calcular uma pontuação.
 
-As contribuições das características são combinadas para obter uma pontuação final.
-
-O cluster é considerado cone quando essa pontuação ultrapassa o limite utilizado pelo classificador.
-
-O objetivo dessa etapa é eliminar objetos que foram agrupados pela clusterização, mas que não possuem geometria compatível com um cone.
+O cluster é considerado cone quando a pontuação ultrapassa o limite utilizado pelo classificador.
 
 ---
 
 # 11. ZED 2i
 
-A ZED 2i é utilizada como segundo sensor do sistema de percepção.
+A ZED 2i é utilizada para fornecer informações visuais e espaciais dos cones.
 
-O código da câmera está no repositório da microdivisão de Percepção.
-
-O pipeline visual pode ser resumido como:
+O fluxo implementado pelo código da câmera é:
 
 ```text
 ZED 2i
@@ -538,7 +518,7 @@ ZED 2i
 captura da imagem
    │
    ▼
-YOLOv8
+YOLO
    │
    ▼
 bounding boxes
@@ -547,240 +527,323 @@ bounding boxes
 ZED SDK
    │
    ▼
-posição dos cones
-   +
-confiança
-   +
-classe/cor
+objetos detectados
    │
    ▼
-informação utilizada
-pelo pipeline LiDAR
+posição + classe/confiança
+   │
+   ▼
+[x, y, color]
 ```
 
 ---
 
-## 11.1 Inicialização
+## 11.1 Inicialização da ZED
 
-A implementação da ZED configura parâmetros como:
+O arquivo `cameraProcessing.py` contém a classe `ZED`.
 
-- frequência de captura;
+Durante a inicialização são definidos:
+
+- FPS;
 - resolução;
 - modo de profundidade;
-- unidade das coordenadas;
-- distância mínima de profundidade;
-- distância máxima de profundidade.
+- unidade das coordenadas.
 
-A ZED também é configurada para receber objetos a partir de **custom bounding boxes**.
+Os valores aceitos para FPS na implementação são:
 
-Essas bounding boxes são produzidas pelo modelo YOLO.
-
----
-
-## 11.2 Inferência
-
-Durante a execução:
-
-1. uma imagem é capturada pela ZED;
-2. a imagem é fornecida ao modelo YOLO;
-3. o modelo retorna as detecções;
-4. as bounding boxes são convertidas para o formato esperado pelo SDK da ZED;
-5. a ZED processa os objetos;
-6. as informações relevantes são extraídas para utilização pelo sistema.
-
-As detecções possuem uma confiança associada.
-
-Existe um limite mínimo:
-
-```python
-DISCARD_THRESHOLD
+```text
+15
+30
+60
+100
 ```
 
-Detecções abaixo desse valor são descartadas.
+Para resolução, a implementação possui as seguintes associações:
+
+| Valor | Resolução ZED |
+|---:|---|
+| `376` | VGA |
+| `720` | HD720 |
+| `1080` | HD1080 |
+| `1242` | HD2K |
+
+O modo de profundidade utilizado pelo código é:
+
+```text
+DEPTH_MODE.ULTRA
+```
+
+e as coordenadas são expressas em:
+
+```text
+UNIT.METER
+```
 
 ---
 
-## 11.3 Informação produzida pela ZED
+## 11.2 Detecção de objetos
 
-A informação utilizada na integração com o LiDAR é representada como:
+Depois de abrir a câmera, o código habilita a detecção de objetos da ZED utilizando:
+
+```text
+CUSTOM_BOX_OBJECTS
+```
+
+Isso significa que as bounding boxes utilizadas pelo módulo de detecção são fornecidas por um detector externo.
+
+Nesse projeto, essas bounding boxes são provenientes do modelo YOLO.
+
+O tracking de objetos está desabilitado na implementação atual.
+
+---
+
+# 12. YOLO
+
+### Observação sobre a versão
+
+Há informações de diferentes versões do pipeline visual nos materiais disponíveis.
+
+O documento de treinamento da equipe descreve a utilização atual da **YOLOv8x**, enquanto o código de câmera fornecido nesta documentação utiliza explicitamente **YOLOv5** carregado através do `torch.hub`.
+
+Portanto, a versão efetivamente utilizada no ambiente de produção deve ser confirmada antes de reproduzir a instalação.
+
+A descrição desta seção, quando relacionada ao código abaixo, refere-se ao comportamento do código fornecido.
+
+---
+
+## 12.1 Carregamento do modelo no código da câmera
+
+No `cameraProcessing.py`, o modelo é carregado através de:
+
+```python
+torch.hub.load(
+    ".../yolov5",
+    "custom",
+    path=".../1280.pt",
+    source="local"
+)
+```
+
+Assim, essa implementação depende de uma cópia local do repositório YOLOv5 e de um arquivo de pesos chamado `1280.pt`.
+
+Os caminhos presentes no código são específicos da máquina em que esse código foi desenvolvido e devem ser tratados como configuração local.
+
+---
+
+## 12.2 Inferência
+
+Durante cada medição:
+
+1. a ZED captura uma imagem;
+2. a imagem é convertida para o formato utilizado pelo modelo;
+3. o YOLO executa a inferência;
+4. as detecções são obtidas no formato de bounding boxes;
+5. cada detecção é convertida para `CustomBoxObjectData`;
+6. as bounding boxes são enviadas para o SDK da ZED;
+7. o SDK retorna os objetos detectados;
+8. a posição e a classificação são extraídas.
+
+O fluxo é:
+
+```text
+imagem
+  │
+  ▼
+YOLO
+  │
+  ▼
+bounding boxes
+  │
+  ▼
+CustomBoxObjectData
+  │
+  ▼
+ZED Object Detection
+  │
+  ▼
+Objects
+```
+
+---
+
+## 12.3 Confiança e cor
+
+O código utiliza:
+
+```python
+NO_COLOR_THRESHOLD = 0.3
+```
+
+como limite mínimo para considerar a confiança utilizada na classificação de cor.
+
+A implementação atual utiliza os labels:
+
+```text
+0
+1
+3
+```
+
+para determinar a codificação de cor.
+
+A cor é representada numericamente:
+
+- label `0` → valor positivo igual à confiança;
+- labels `1` ou `3` → valor negativo igual à confiança;
+- demais situações → `0`.
+
+Somente detecções com `color_accuracy != 0` são adicionadas à saída.
+
+---
+
+# 13. Saída da ZED
+
+Depois de processar os objetos, o `cameraProcessing.py` gera uma matriz com três valores por cone:
 
 ```text
 [x, y, color]
 ```
 
-As coordenadas são utilizadas para localizar regiões de interesse na nuvem do LiDAR.
-
-A classificação também é utilizada posteriormente para determinar a cor do cone na saída final.
-
----
-
-# 12. YOLOv8
-
-A detecção de cones na imagem utiliza o modelo **YOLOv8x**.
-
-Esse modelo substituiu a YOLOv5 anteriormente utilizada pela equipe.
-
-O treinamento atual utiliza um dataset sintético produzido com auxílio do Blender.
-
----
-
-## 12.1 Dataset
-
-O dataset anterior possuía aproximadamente 700 mil labels distribuídas entre cones azuis, amarelos e laranjas.
-
-O dataset atualmente utilizado possui aproximadamente **68 milhões de labels**, criadas sinteticamente.
-
-O dataset está armazenado no Google Drive da equipe:
-
-[Dataset de cones — Google Drive](https://drive.google.com/drive/folders/1o_lj_FDLIeJCDfVL1FtbH7qVvsN7JF_i)
-
----
-
-## 12.2 Treinamento
-
-O treinamento é realizado em uma GPU NVIDIA Quadro RTX 6000 com 24 GB de VRAM.
-
-O processo documentado pela equipe possui três etapas principais:
-
-```text
-Dataset
-   │
-   ▼
-Tuning dos hiperparâmetros
-   │
-   ▼
-Pré-treinamento
-   │
-   ▼
-Treinamento final
-   │
-   ▼
-conesModel.pt
-```
-
-### Tuning
-
-Antes do treinamento principal, são buscados hiperparâmetros adequados ao dataset.
-
-### Pré-treinamento
-
-O modelo utilizado como ponto de partida é:
-
-```text
-yolov8x.pt
-```
-
-Parâmetros registrados para essa etapa:
-
-```text
-epochs = 300
-imgsz = 640
-batch = 20
-cache = ram
-```
-
-Após essa etapa, o `last.pt` é utilizado como modelo de partida para o treinamento final.
-
-### Treinamento final
-
-Parâmetros registrados:
-
-```text
-epochs = 300
-imgsz = 1280
-batch = 8
-cache = disk
-```
-
-O modelo resultante é:
-
-```text
-conesModel.pt
-```
-
----
-
-## 12.3 Teste do modelo
-
-O projeto possui o script:
-
-```text
-Codes/yoloTest.py
-```
-
-que carrega o `conesModel.pt`, obtém imagens de uma câmera e executa a inferência.
-
-A saída é visualizada sobre a imagem para inspeção das detecções.
-
----
-
-## 12.4 Exportação para ONNX
-
-O script:
-
-```text
-Codes/yolotoonnx.py
-```
-
-exporta o modelo para ONNX utilizando:
+No código atual, os valores utilizados para X e Y da saída são obtidos a partir de:
 
 ```python
-model.export(format="onnx", opset=12)
+[obj.position[2], obj.position[0]]
 ```
 
-O modelo exportado pode ser utilizado como parte das etapas de implantação e otimização para o hardware NVIDIA.
+e a terceira posição armazena o valor de classificação associado à cor.
 
----
-
-## 12.5 Otimização para Jetson
-
-O projeto prevê a utilização de TensorRT para otimizar a inferência do modelo em hardware NVIDIA.
-
-O modelo exportado utilizado nesse processo é:
+Exemplo conceitual:
 
 ```text
-conesModel.onnx
+[
+    [x1, y1, color1],
+    [x2, y2, color2],
+    ...
+]
 ```
 
-Os detalhes de implantação do modelo na Jetson devem ser mantidos junto da documentação específica do ambiente de execução.
+Caso nenhuma detecção válida seja obtida, a função retorna uma matriz vazia com dimensão `(0, 3)`.
 
 ---
 
-# 13. Fusão LiDAR–ZED
+# 14. Nó ROS 2 da ZED
 
-A integração entre os dois sensores ocorre principalmente de duas formas:
+O arquivo `dataProcessing.py` transforma a saída da câmera em uma publicação ROS 2.
 
-1. as **coordenadas da ZED são utilizadas para restringir o processamento do LiDAR**;
-2. a **classificação de cor da ZED é utilizada na saída das detecções do LiDAR**.
+O nó se chama:
 
-Portanto, a ZED não é utilizada apenas depois que o LiDAR terminou seu processamento.
+```text
+CameraNode
+```
 
-A posição fornecida pela câmera influencia o processamento desde a etapa de ROI.
+e publica:
 
----
+```text
+camera_cones
+```
 
-## 13.1 Utilização das coordenadas
+com o tipo:
+
+```text
+std_msgs/msg/Float32MultiArray
+```
+
+O nó executa o pipeline a cada:
+
+```text
+0.1 s
+```
+
+ou aproximadamente:
+
+```text
+10 Hz
+```
 
 O fluxo é:
 
 ```text
-                 ZED
-                  │
-                  ▼
-          detecção dos cones
-                  │
-                  │ coordenadas
-                  ▼
-         transformação ZED→LiDAR
-                  │
-                  ▼
-          ROI ao redor dos cones
-                  │
-                  ▼
-                 LiDAR
-                  │
-                  ▼
-        processamento da nuvem
+CameraNode
+    │
+    ▼
+camera_pkg.main
+    │
+    ▼
+ZED.measure()
+    │
+    ▼
+detecções
+    │
+    ▼
+Float32MultiArray
+    │
+    ▼
+camera_cones
+```
+
+A mensagem publicada contém o resultado achatado:
+
+```text
+[x1, y1, color1, x2, y2, color2, ...]
+```
+
+---
+
+# 15. Execução independente da ZED
+
+O arquivo `main.py` do pacote da câmera também permite executar um teste independente do ROS 2.
+
+A câmera é criada utilizando:
+
+```python
+ZED(30, 1000)
+```
+
+e o resultado de `measure()` é impresso continuamente.
+
+A execução independente possui a finalidade de testar diretamente:
+
+```text
+ZED
+ ↓
+YOLO
+ ↓
+detecções
+```
+
+sem depender do restante da infraestrutura ROS 2.
+
+> **Observação:** a resolução `1000` não está entre as resoluções explicitamente mapeadas pela implementação mostrada. Nesse caso, o próprio código utiliza `720` como valor padrão.
+
+---
+
+# 16. Fusão LiDAR–ZED
+
+A fusão entre os sensores ocorre principalmente em dois momentos.
+
+### 16.1 Coordenadas da ZED → processamento LiDAR
+
+As posições fornecidas pela ZED são utilizadas para restringir a região da nuvem LiDAR analisada.
+
+```text
+               ZED
+                │
+         cone detectado
+                │
+           posição [x,y]
+                │
+                ▼
+       transformação
+       ZED → LiDAR
+                │
+                ▼
+        ROI localizada
+                │
+                ▼
+             LiDAR
+                │
+                ▼
+          processamento
 ```
 
 O parâmetro:
@@ -789,127 +852,89 @@ O parâmetro:
 POINT_CONE_DISTANCE
 ```
 
-determina a proximidade utilizada para selecionar os pontos do LiDAR ao redor das posições fornecidas pela câmera.
+controla a região considerada ao redor das posições fornecidas pela câmera.
 
-Isso reduz a região da nuvem que será processada e concentra o detector nas regiões onde a ZED encontrou cones.
+### 16.2 Cor da ZED → detecção LiDAR
 
----
+Depois da classificação geométrica dos clusters, os cones detectados pelo LiDAR são comparados espacialmente com as detecções da ZED.
 
-## 13.2 Utilização da cor
+A associação utiliza a proximidade entre os pontos.
 
-Depois do processamento LiDAR, os clusters classificados como cones são comparados com as detecções fornecidas pela ZED.
+Quando existe correspondência, a informação de cor da ZED é utilizada na saída final.
 
-A associação utiliza a proximidade espacial entre as posições.
-
-Quando existe correspondência, a cor fornecida pela ZED é atribuída ao cone detectado pelo LiDAR.
-
-O resultado final mantém o formato:
-
-```text
-[x, y, color]
-```
+Portanto, o papel da ZED não é simplesmente "colorir" uma detecção pronta do LiDAR. Sua posição também participa do processamento da nuvem.
 
 ---
 
-## 13.3 Referenciais
+# 17. Transformação das coordenadas
 
-As coordenadas da ZED são processadas por:
+O módulo:
 
 ```text
 transform.py
 ```
 
-para serem utilizadas no referencial adotado pelo pipeline LiDAR.
+é responsável pela transformação das coordenadas fornecidas pela ZED para o referencial adotado pelo processamento.
 
-A implementação atual de `Transform` trabalha com uma transformação no plano XY e mantém a informação de cor junto das coordenadas.
-
-Qualquer alteração nessa transformação deve ser tratada junto da documentação de calibração entre os dois sensores.
-
----
-
-# 14. Modo LiDAR-only
-
-Quando a câmera não está disponível, o pipeline continua podendo executar o processamento do LiDAR.
-
-Nesse caso:
+A estrutura da função utiliza:
 
 ```text
-LiDAR
-  │
-  ▼
-ROI
-  │
-  ▼
-MLESAC
-  │
-  ▼
-Clusterização
-  │
-  ▼
-Restauração
-  │
-  ▼
-Filtro geométrico
-  │
-  ▼
-Cones LiDAR
+[x, y, color]
 ```
 
-Como não existe uma classificação de cor fornecida pela ZED, o sistema possui uma heurística para produzir a cor dos cones a partir da posição obtida pelo LiDAR.
+como entrada e preserva a informação de cor durante a transformação.
+
+Qualquer alteração da transformação entre os sensores deve ser registrada junto da documentação de calibração LiDAR–ZED.
 
 ---
 
-# 15. Dados artificiais
+# 18. Dados artificiais
 
-O pacote possui nós auxiliares para executar o pipeline com dados previamente preparados.
-
-Eles são importantes para desenvolvimento, testes e reprodução de casos sem depender continuamente dos sensores físicos.
+O pacote de processamento possui fontes artificiais para testes.
 
 ## `artificial_lidar`
 
-Carrega uma nuvem de pontos armazenada em arquivo e publica essa informação como `PointCloud2`.
-
-Tópico:
+Carrega uma nuvem de pontos armazenada em arquivo e publica:
 
 ```text
 artificialLIDAR
 ```
 
+como `PointCloud2`.
+
+---
+
 ## `framing_lidar`
 
-Percorre uma pasta contendo nuvens de pontos armazenadas e publica os arquivos sequencialmente.
-
-Tópico:
+Percorre uma pasta de nuvens de pontos e publica os arquivos sequencialmente em:
 
 ```text
 framingLIDAR
 ```
 
-Esse modo permite reproduzir uma sequência de casos previamente registrados.
+Esse modo permite reproduzir casos gravados anteriormente.
+
+---
 
 ## `artificial_zed`
 
-Publica um conjunto de detecções simuladas da câmera.
-
-Tópico:
+Publica detecções de cones simuladas no tópico:
 
 ```text
 artificial_zed
 ```
 
-Esses nós permitem testar o pipeline utilizando entradas conhecidas e são especialmente úteis durante o desenvolvimento sem acesso ao carro.
+Esses dados podem ser utilizados para testar a integração com o pipeline LiDAR sem depender da câmera física.
 
 ---
 
-# 16. Parâmetros importantes
+# 19. Parâmetros importantes
 
-Os principais parâmetros utilizados pelo pipeline estão concentrados em:
+Os parâmetros do processamento LiDAR estão concentrados em:
 
 ```text
 constants.py
 ```
-
-Alguns dos grupos mais importantes são:
 
 ### ROI
 
@@ -958,143 +983,137 @@ CONE_WIDTH
 CONE_HEIGHT
 ```
 
-Ao investigar por que um cone não está sendo detectado, esses parâmetros são alguns dos primeiros pontos a serem consultados.
+Na parte visual, parâmetros como FPS, resolução e `NO_COLOR_THRESHOLD` estão definidos no próprio código da câmera.
 
 ---
 
-# 17. Publicações para depuração
+# 20. Publicações e interfaces ROS 2
 
-Quando:
+As principais interfaces relevantes para a percepção são:
 
-```python
-DEBUGGING_MODE = True
-```
+| Nó / componente | Tópico | Tipo | Informação |
+|---|---|---|---|
+| Driver LiDAR | tópico definido pelo driver | `sensor_msgs/msg/PointCloud2` | Nuvem de pontos |
+| `CameraNode` | `camera_cones` | `std_msgs/msg/Float32MultiArray` | Cones detectados pela ZED |
+| `lidar_node` | `final_array` | `std_msgs/msg/Float32MultiArray` | Cones finais |
+| `artificial_lidar` | `artificialLIDAR` | `sensor_msgs/msg/PointCloud2` | Nuvem artificial |
+| `framing_lidar` | `framingLIDAR` | `sensor_msgs/msg/PointCloud2` | Nuvens gravadas |
+| `artificial_zed` | `artificial_zed` | `std_msgs/msg/Float32MultiArray` | ZED simulada |
 
-o nó publica informações adicionais utilizadas para inspeção durante o desenvolvimento.
-
-Isso permite visualizar partes do resultado do processamento no RViz2 e acompanhar o comportamento da nuvem após as etapas do pipeline.
-
-Esse modo é especialmente útil para verificar:
-
-- região de interesse;
-- pontos restantes após a remoção do chão;
-- resultado do processamento;
-- posição dos cones detectados.
+> **Atenção:** os nomes efetivamente utilizados em `constants.py` podem variar conforme o ambiente ou o modo de teste. Verifique sempre a configuração atual antes de executar o pipeline.
 
 ---
 
-# 18. Sincronização temporal
+# 21. Onde procurar no código
 
-O processamento depende de informações provenientes de sensores diferentes.
+| Assunto | Arquivo |
+|---|---|
+| Execução do pipeline LiDAR | `main.py` |
+| Tópicos e parâmetros | `constants.py` |
+| ROI | `roi.py` |
+| Remoção do chão | `MLESAC.py` |
+| Clustering | `clustering.py` |
+| Classificação geométrica | `geometric_filters.py` |
+| Fusão LiDAR–ZED | `fusion_engine.py` |
+| Transformação de coordenadas | `transform.py` |
+| Processamento da câmera | `cameraProcessing.py` |
+| Interface da câmera | `main.py` da câmera |
+| Publicação ROS 2 da câmera | `dataProcessing.py` |
+| Modelo YOLO utilizado pelo código fornecido | caminho configurado em `cameraProcessing.py` |
+| Teste independente da câmera | `main.py` da câmera |
 
-Por isso, a sincronização temporal é relevante principalmente em situações nas quais o veículo está em movimento.
+---
 
-A documentação específica do procedimento de sincronização entre o LiDAR e a NVIDIA Jetson está em:
+# 22. Sincronização temporal
+
+A percepção utiliza sensores que observam o ambiente em momentos diferentes. Como o veículo está em movimento, diferenças temporais entre as medições podem afetar a associação entre LiDAR e ZED.
+
+A documentação do procedimento de sincronização entre LiDAR e NVIDIA Jetson está em:
 
 ```text
 06_sensor_synchronization_ptp.md
 ```
 
-Esse documento deve ser consultado quando o objetivo for configurar ou investigar a sincronização temporal do sistema.
-
-A sincronização temporal e a calibração espacial são problemas distintos:
+A sincronização temporal deve ser entendida separadamente da calibração espacial:
 
 ```text
 Sincronização temporal
         │
         ▼
-"Quando o sensor observou o objeto?"
+"Quando cada sensor observou o objeto?"
 
 Calibração espacial
         │
         ▼
-"Em que posição o objeto está no referencial do outro sensor?"
+"Em que posição o sensor representa o objeto?"
 ```
 
-Os dois são relevantes para uma associação correta entre LiDAR e ZED.
+Ambos são relevantes para uma fusão sensorial consistente.
 
 ---
 
-# 19. Limitações conhecidas
+# 23. Limitações e próximos passos
 
-O sistema possui limitações e pontos identificados para evolução futura.
-
-Entre eles:
-
-- calibração entre LiDAR e ZED;
-- arquitetura de fusão sensorial;
-- gerenciamento do estado dos sensores;
-- processamento da nuvem durante movimentos em velocidades elevadas;
-- necessidade potencial de deskewing;
-- possibilidades de otimização da implementação.
-
-Esses pontos são discutidos com mais detalhes em:
+As limitações e possíveis melhorias conhecidas estão documentadas em:
 
 ```text
 05_roadmap_future.md
 ```
 
-O objetivo desta documentação é registrar o estado atual do sistema; alterações futuras devem ser incorporadas à documentação conforme forem implementadas.
+Entre os pontos já identificados estão:
+
+- calibração LiDAR–ZED;
+- arquitetura de fusão sensorial;
+- sincronização temporal;
+- deskewing;
+- gerenciamento do estado dos sensores;
+- otimização da inferência e do processamento;
+- reprodução completa do ambiente ZED/YOLO.
 
 ---
 
-# 20. Onde procurar no código
+# 24. Resumo
 
-Quando for necessário investigar uma parte específica da percepção:
-
-| Problema / assunto | Arquivo principal |
-|---|---|
-| Entrada e execução do pipeline | `main.py` |
-| Tópicos e parâmetros | `constants.py` |
-| ROI | `roi.py` |
-| Remoção do chão | `MLESAC.py` |
-| Clustering | `clustering.py` |
-| Classificação dos clusters | `geometric_filters.py` |
-| Fusão LiDAR–ZED | `fusion_engine.py` |
-| Transformação das coordenadas | `transform.py` |
-| Dados artificiais do LiDAR | `artificial_lidar.py` |
-| Reprodução de nuvens | `artificial_framing_lidar.py` |
-| Dados artificiais da ZED | `artificial_zed.py` |
-| YOLO / câmera | repositório da ZED no GitLab |
-
----
-
-## 21. Resumo do funcionamento
-
-Em uma frase, o sistema pode ser entendido como:
-
-> **A ZED identifica onde estão os cones e suas cores; o LiDAR utiliza essas posições para concentrar o processamento da nuvem, identifica geometricamente os objetos e, quando possível, recebe da ZED a classificação de cor.**
-
-Em forma de fluxo:
+O funcionamento da percepção pode ser resumido como:
 
 ```text
-                       ZED 2i
-                          │
-                       YOLOv8
-                          │
-                posição + classe/cor
-                          │
-                          ▼
-LiDAR ──► PointCloud2 ──► ROI orientada pela ZED
-                          │
-                          ▼
-                     MLESAC
-                          │
-                          ▼
-                    Clusterização
-                          │
-                          ▼
-                     Restauração
-                          │
-                          ▼
-                 Filtro geométrico
-                          │
-                          ▼
-                  cones detectados
-                          │
-                          ▼
-                  associação com ZED
-                          │
-                          ▼
-                     [x, y, cor]
+                         ZED 2i
+                            │
+                          imagem
+                            │
+                           YOLO
+                            │
+                   bounding boxes
+                            │
+                       ZED SDK
+                            │
+                     posição + cor
+                            │
+                            │
+                            ▼
+LiDAR ──► PointCloud2 ──► ROI localizada
+                            │
+                            ▼
+                       MLESAC
+                            │
+                            ▼
+                      Clusterização
+                            │
+                            ▼
+                       Restauração
+                            │
+                            ▼
+                   Filtro geométrico
+                            │
+                            ▼
+                     cones LiDAR
+                            │
+                    associação ZED
+                            │
+                            ▼
+                        [x, y, cor]
 ```
+
+Em termos conceituais:
+
+> **A ZED identifica os cones na imagem e fornece sua posição e classificação; o LiDAR utiliza essas posições para concentrar o processamento da nuvem e identificar geometricamente os objetos. As informações dos dois sensores são então associadas para produzir as detecções finais dos cones.**
